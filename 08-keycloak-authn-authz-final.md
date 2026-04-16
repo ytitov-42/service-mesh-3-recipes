@@ -52,6 +52,7 @@ spec:
   profile: ambient
   values:
     meshConfig:
+      # we use this part below for a 2. part of this tutorial (forward to login)
       extensionProviders:
         - name: "oauth2-auth"
           envoyExtAuthzHttp:
