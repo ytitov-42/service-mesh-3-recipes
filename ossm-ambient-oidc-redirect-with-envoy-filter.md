@@ -299,8 +299,6 @@ kubectl logs -f $GATEWAY_POD -n istio-system
 ```
 *You should see entries like `[oauth2] no cookie found, redirecting to authorization endpoint`.*
 
-**Did the config dump show your filter as "Programmed" or is the output empty?**
-
 
 
 # Networking: OpenShift Router as Bridge vs. BYO AWS NLB for Ingress Gateway 
