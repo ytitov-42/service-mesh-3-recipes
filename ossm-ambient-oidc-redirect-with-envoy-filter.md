@@ -7,6 +7,18 @@ This is the complete technical guide for setting up native OIDC redirection with
 - **If API**: Passes the request into the Mesh.
 - **Waypoint Proxy** enforces the AuthorizationPolicy to ensure the API call has a valid token.
 
+## Prereqs:
+- **Security Groups**: Ensure your ROSA worker node security groups allow Outbound 443 to the internet (or your NAT Gateway) so the Ingress Gateway can reach the token_endpoint.
+- **Register Clients**: In Keycloak, create a client (e.g., rosa-global-client):
+- **Whitelist Redirects**: Add the callback URLs for both clusters to the "Valid Redirect URIs":
+
+   * https://app.cluster-1.rosa.aws.../oauth2/callback
+   * https://app.cluster-2.rosa.aws.../oauth2/callback
+
+- **Client Secret**: Note the Client Secret; you will need to sync this across both ROSA clusters.
+- **AWS Egress (NAT Gateway): **
+Since the Ingress Gateway is initiating a connection to the internet to talk to the OIDC provider, your ROSA worker nodes must have a route to a NAT Gateway (if they are in private subnets) or an Internet Gateway.
+
 -----
 
 ## 1\. Global Identity Setup (External)
@@ -288,3 +300,65 @@ kubectl logs -f $GATEWAY_POD -n istio-system
 *You should see entries like `[oauth2] no cookie found, redirecting to authorization endpoint`.*
 
 **Did the config dump show your filter as "Programmed" or is the output empty?**
+
+
+
+# Networking: OpenShift Router as Bridge vs. BYO AWS NLB for Ingress Gateway 
+
+In a production ROSA environment, **you have a choice**, but the way we configured it in the previous steps uses the **OpenShift Router as a bridge**. 
+
+Here is exactly how those two pieces connect and why the "Independent NLB" doesn't necessarily bypass the Router.
+
+---
+
+### 1. The "Integrated" Path (How they talk)
+When you use an **OpenShift Route** (as we did in step 5.2), you are telling the **OpenShift Ingress Controller** (the default HAProxy router) to handle the "public" side of the connection.
+
+1.  **AWS NLB (Managed by OpenShift):** This is the "main" NLB that comes with every ROSA cluster. It sends traffic to the OpenShift Router (HAProxy).
+2.  **OpenShift Router:** It terminates the SSL (using the cluster's wildcard cert).
+3.  **The Hand-off:** Because we set `to: { kind: Service, name: istio-ingressgateway }`, the Router sends the decrypted traffic over the internal network to the **Istio Ingress Gateway pods**.
+4.  **Envoy:** Now the traffic is "inside" the Mesh. Envoy runs the OIDC filter we wrote.
+
+**Why do it this way?** It’s easier. You don't have to manage DNS or certificates for a second AWS Load Balancer; you just use the ROSA apps domain.
+
+---
+
+### 2. The "Independent" Path (BYO Load Balancer)
+If you define the Istio Gateway as a `ServiceType: LoadBalancer`, Kubernetes **does** create a second, independent AWS NLB specifically for Envoy.
+
+In this scenario:
+1.  **Traffic completely bypasses the OpenShift Router.**
+2.  **AWS NLB (Istio's NLB) -> Istio Ingress Gateway Pods.**
+3.  **Envoy must handle its own TLS** (you have to upload certificates into the Mesh).
+
+If you use this path, the "OpenShift Router terminates TLS" step from the previous flow is **removed**. Envoy becomes the absolute first point of contact in the cluster.
+
+
+
+---
+
+### 3. Comparing the L4/L7 Flow
+
+| Feature | Via OpenShift Router (Our Guide) | Independent Istio Gateway |
+| :--- | :--- | :--- |
+| **External URL** | `*.apps.rosa.cluster.com` | Custom DNS (e.g., `api.mycompany.com`) |
+| **TLS Termination** | OpenShift (Edge termination) | Envoy (Simple or Mutual TLS) |
+| **AWS Resource** | Uses the existing ROSA NLB. | Provisions a **New** AWS NLB. |
+| **Complexity** | Low (uses cluster defaults). | High (requires DNS/Cert management). |
+
+---
+
+### 4. How the "Native Filter" works in both cases
+Regardless of whether the traffic comes from the OpenShift Router or a dedicated NLB, the **Envoy Filter** doesn't care. It simply sits at the "Entry Point" of the Mesh.
+
+* If traffic comes from the **Router**: Envoy sees a request that has already been decrypted. It checks the headers and decides: "Redirect to Keycloak" or "Pass to App."
+* If traffic comes from an **Independent NLB**: Envoy decrypts the traffic itself, then checks the headers and makes the same decision.
+
+### Why the Waypoint Proxy is the Final Step
+In Service Mesh 3 (Ambient), even after the Ingress Gateway (Envoy) says "This is a valid API call," it sends the traffic into the cluster. The **Waypoint Proxy** sits in front of your actual application pods. It is the final "Security Guard" that checks the `AuthorizationPolicy`. 
+
+
+
+It acts as a **Zero Trust** fail-safe: if someone managed to bypass the Ingress Gateway, they would still be stopped by the Waypoint because they lack the proper JWT principal.
+
+
