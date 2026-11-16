@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# ROLE: AWS account owner           RUN ORDER: cleanup, 2 of 2
+#
+# Run AFTER 90-cleanup-cluster.sh. Removes the Route Server, its endpoints and the IAM role,
+# and repairs SourceDestCheck if the operator was torn down before its finalizer completed.
+#
+# This is the script that actually stops the hourly endpoint charges.
+#
+set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+
+ASSUME_YES="${ASSUME_YES:-false}"; DRY_RUN="${DRY_RUN:-false}"
+KEEP_ROLE=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --keep-role) KEEP_ROLE=true; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --yes) ASSUME_YES=true; shift ;;
+    -h|--help) echo "Usage: 91-cleanup-aws.sh [--keep-role] [--dry-run] [--yes]"; exit 0 ;;
+    *) fail "unknown argument: $1" ;;
+  esac
+done
+
+load_config
+load_state "$HANDBACK_FILE" "handback file (needed for RS_ID and instance IDs)"
+require_aws
+
+[ -n "${RS_ID:-}" ] || fail "no RS_ID in handback.env — nothing to clean up, or wrong directory"
+info "Route Server: $RS_ID"
+
+confirm "Delete Route Server $RS_ID, its endpoints, and the IAM role $IAM_ROLE_NAME?" || fail "aborted"
+
+# ---- source/destination check ---------------------------------------------------------
+# Do this first and unconditionally. Leaving it disabled is the one genuinely security-
+# relevant leftover: those workers would keep forwarding traffic for addresses they do not
+# own, long after the demo is forgotten.
+if [ -n "${INSTANCE_IDS:-}" ]; then
+  step "Restoring source/destination check"
+  # shellcheck disable=SC2086
+  aws ec2 describe-instances --region "$REGION" --instance-ids $INSTANCE_IDS \
+    --query 'Reservations[].Instances[].[InstanceId,SourceDestCheck]' --output table || true
+
+  # shellcheck disable=SC2086
+  for ENI in $(aws ec2 describe-instances --region "$REGION" --instance-ids $INSTANCE_IDS \
+      --query 'Reservations[].Instances[].NetworkInterfaces[].NetworkInterfaceId' \
+      --output text 2>/dev/null | tr '\t' '\n'); do
+    # Every interface, not just the primary — the operator disables the check per ENI.
+    run aws ec2 modify-network-interface-attribute --region "$REGION" \
+      --network-interface-id "$ENI" --source-dest-check "Value=true"
+  done
+  ok "source/destination check re-enabled on all router node ENIs"
+fi
+
+# ---- peers, then endpoints, then the server -------------------------------------------
+step "Route Server peers"
+# Normally the operator removed these already; this catches anything stranded by a
+# controller that was killed mid-finalizer. An endpoint with a live peer will not delete.
+PEERS=$(aws ec2 describe-route-server-peers --region "$REGION" \
+  --filters "Name=route-server-id,Values=$RS_ID" \
+  --query 'RouteServerPeers[?State!=`deleted`].RouteServerPeerId' --output text 2>/dev/null | tr '\t' '\n')
+if [ -z "$PEERS" ]; then
+  ok "no peers left (the operator cleaned up properly)"
+else
+  for P in $PEERS; do
+    info "deleting peer $P"
+    run aws ec2 delete-route-server-peer --region "$REGION" --route-server-peer-id "$P" >/dev/null
+  done
+  [ "$DRY_RUN" = "true" ] || sleep 30   # peers take a moment to clear before endpoints go
+fi
+
+step "Route Server endpoints (this stops the hourly charge)"
+EPS=$(aws ec2 describe-route-server-endpoints --region "$REGION" \
+  --filters "Name=route-server-id,Values=$RS_ID" \
+  --query 'RouteServerEndpoints[?State!=`deleted`].RouteServerEndpointId' --output text 2>/dev/null | tr '\t' '\n')
+for E in $EPS; do
+  [ -z "$E" ] && continue
+  info "deleting endpoint $E"
+  run aws ec2 delete-route-server-endpoint --region "$REGION" --route-server-endpoint-id "$E" >/dev/null
+done
+[ "$DRY_RUN" = "true" ] || sleep 30
+
+step "Disassociate and delete the Route Server"
+# A Route Server still attached to a VPC will not delete, so order matters here too.
+tolerate 'not associated|InvalidRouteServer|does not exist' \
+  aws ec2 disassociate-route-server --region "$REGION" --route-server-id "$RS_ID" --vpc-id "$VPC_ID" >/dev/null
+[ "$DRY_RUN" = "true" ] || sleep 15
+tolerate 'InvalidRouteServer|does not exist|has dependencies' \
+  aws ec2 delete-route-server --region "$REGION" --route-server-id "$RS_ID" >/dev/null
+ok "Route Server removed (verify below)"
+
+# ---- IAM -------------------------------------------------------------------------------
+if [ "$KEEP_ROLE" = "true" ]; then
+  info "keeping IAM role $IAM_ROLE_NAME (--keep-role)"
+else
+  step "IAM role"
+  # Inline policies must go first — IAM refuses to delete a role that still has them.
+  tolerate 'NoSuchEntity' \
+    aws iam delete-role-policy --role-name "$IAM_ROLE_NAME" --policy-name bgp-cloud-connector >/dev/null
+  tolerate 'NoSuchEntity|DeleteConflict' \
+    aws iam delete-role --role-name "$IAM_ROLE_NAME" >/dev/null
+  ok "IAM role removed"
+fi
+
+# ---- test client ------------------------------------------------------------------------
+if [ -n "${TEST_CLIENT_ID:-}" ]; then
+  step "Test client"
+  if confirm "Terminate the test EC2 instance $TEST_CLIENT_ID?"; then
+    run aws ec2 terminate-instances --region "$REGION" --instance-ids "$TEST_CLIENT_ID" >/dev/null
+    ok "terminating $TEST_CLIENT_ID"
+  fi
+fi
+
+step "Verify nothing is left billing"
+aws ec2 describe-route-servers --region "$REGION" \
+  --filters "Name=tag:Name,Values=$RS_NAME_TAG" \
+  --query 'RouteServers[].[RouteServerId,State]' --output table || true
+
+cat <<EOF
+
+  Security group rules added by script 02 were left in place — they are scoped to the VPC
+  CIDR and harmless, but remove them from $WORKER_SGS if this was a shared cluster.
+
+  If you added a Transit Gateway static route or a Direct Connect allowed prefix for
+  $CUDN_CIDR, remove those too. Neither was created by these scripts, so neither is
+  removed here.
+
+EOF
