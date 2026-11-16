@@ -2,7 +2,7 @@
 
 A build-and-demo runbook: an OpenShift Virtualization VM on ROSA HCP, reachable from the AWS VPC — and over Direct Connect from on-prem — at its own IP, with no NAT.
 
-> **Not yet executed against a live cluster.** Every command and manifest here is sourced and cross-checked against the operator repository, Red Hat documentation and the AWS API reference, but it has not been run end to end. Dry-run it before a customer sees it.
+> This is community guideline. It is not supported officially by Red Hat, i.e. it is not a part of the official documentation. 
 
 ---
 
