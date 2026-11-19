@@ -73,12 +73,34 @@ Work from this directory:
 cd rosa-bgp-connector-operator-demo/scripts
 ```
 
+### Prerequisite: metal workers (if you need the VM)
+
+CNV on ROSA needs `*.metal`. From a host where `rosa list clusters` shows your cluster
+(often the **bastion**):
+
+```bash
+rosa list clusters
+rosa list instance-types --hosted-cp --region us-east-2 | grep -i metal
+
+rosa create machinepool --cluster <rosa-cluster-name> --name virt-mp \
+  --replicas 2 \
+  --instance-type m5zn.metal \
+  --subnet <worker-subnet-id> \
+  --ec2-metadata-http-tokens required \
+  --labels bgp_router=true
+```
+
+Wait until the pool shows `2/2` and nodes are Ready (`oc get nodes -L node.kubernetes.io/instance-type,bgp_router`).
+Metal often takes **15–45 minutes** after EC2 is `running`.
+
+> Note: `rosa list instance-types` on some CLI builds has **no** `-c` flag; use `--hosted-cp --region`.
+
 ### 0. Edit `config.env`
 
 Set at least:
 
 ```bash
-CLUSTER_NAME="your-rosa-cluster"
+CLUSTER_NAME="your-rosa-cluster"   # same name as the ROSA cluster / metal pool
 REGION="us-east-2"                 # must match the cluster
 CUDN_CIDR="192.168.100.0/24"     # must NOT overlap VPC / pod / service CIDRs
 AMAZON_ASN="64512"
@@ -94,28 +116,7 @@ oc get network.config/cluster -o jsonpath='Pod: {.spec.clusterNetwork[*].cidr}{"
 # VPC CIDR is checked again in script 02
 ```
 
-### 1. Metal workers (if you need the VM)
-
-CNV on ROSA needs `*.metal`. From a host where `rosa list clusters` shows your cluster
-(often the **bastion**):
-
-```bash
-rosa list instance-types --hosted-cp --region us-east-2 | grep -i metal
-
-rosa create machinepool --cluster "$CLUSTER_NAME" --name virt-mp \
-  --replicas 2 \
-  --instance-type m5zn.metal \
-  --subnet <worker-subnet-id> \
-  --ec2-metadata-http-tokens required \
-  --labels bgp_router=true
-```
-
-Wait until the pool shows `2/2` and nodes are Ready (`oc get nodes -L node.kubernetes.io/instance-type,bgp_router`).
-Metal often takes **15–45 minutes** after EC2 is `running`.
-
-> Note: `rosa list instance-types` on some CLI builds has **no** `-c` flag; use `--hosted-cp --region`.
-
-### 2. Cluster prepare (`01`)
+### 1. Cluster prepare (`01`)
 
 ```bash
 ./01-cluster-prepare.sh --dry-run
@@ -127,7 +128,7 @@ with the AWS owner if roles are split.
 
 If you added metal **after** a previous `01` run, re-run `01` so handoff picks up new instance IDs.
 
-### 3. AWS setup (`02`)
+### 2. AWS setup (`02`)
 
 ```bash
 aws sts get-caller-identity --region "$REGION"   # must work
@@ -141,7 +142,7 @@ Produces `state/handback.env` (`RS_ID`, `ROLE_ARN`, route tables, optional test 
 `--with-test-client` launches a small EC2 in a router subnet. It does **not** attach an
 IAM instance profile (privilege decision). Use script 05 with `--ensure-ssm-profile` later.
 
-### 4. Cluster deploy (`03`)
+### 3. Cluster deploy (`03`)
 
 ```bash
 ./03-cluster-deploy.sh --dry-run --yes
@@ -159,7 +160,7 @@ This will:
 5. Unless `--skip-vm`: install **OpenShift Virtualization** if missing, wait for
    HyperConverged + kubemacpool webhook, create the demo VM
 
-### 5. Verify (`04`)
+### 4. Verify (`04`)
 
 ```bash
 ./04-verify.sh
@@ -168,7 +169,7 @@ This will:
 Expect passes for operator, BGP sessions, BGPRouting, CUDN, VM IP in CUDN, IPAMClaim,
 and (with AWS creds) the CUDN prefix in VPC route tables.
 
-### 6. Demo reachability (`05`)
+### 5. Demo reachability (`05`)
 
 From a VPC test client (not the lab bastion — it is usually in another VPC):
 
@@ -200,7 +201,7 @@ oc get svc -n bgp-demo                    # should be empty
 oc get vmi demo-vm -n bgp-demo -o wide
 ```
 
-### 7. Cleanup (order matters)
+### 6. Cleanup (order matters)
 
 ```bash
 ./90-cleanup-cluster.sh --yes     # wait for BGPCloudConfiguration finalizer
