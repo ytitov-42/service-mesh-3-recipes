@@ -729,9 +729,11 @@ metadata:
   name: openshift-bgp-cloud-connector
   namespace: openshift-bgp-cloud-connector
 spec:
-  # Empty list = all-namespaces scope. The operator manages cluster-scoped objects
-  # (BGPCloudConfiguration, CUDNs), so limiting it to one namespace would break it.
-  targetNamespaces: []
+  # OwnNamespace only. The CSV does not support AllNamespaces — an empty
+  # targetNamespaces list makes OLM try AllNamespaces and the install fails with
+  # UnsupportedOperatorGroup. Cluster-scoped CRs still work; watch scope ≠ CR scope.
+  targetNamespaces:
+    - openshift-bgp-cloud-connector
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription

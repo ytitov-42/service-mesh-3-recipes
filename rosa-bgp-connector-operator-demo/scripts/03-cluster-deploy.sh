@@ -78,9 +78,11 @@ metadata:
   name: ${OPERATOR_NS}
   namespace: ${OPERATOR_NS}
 spec:
-  # Empty = all-namespaces. The operator owns cluster-scoped objects, so a single-namespace
-  # scope would break it.
-  targetNamespaces: []
+  # OwnNamespace only — the CSV does not support AllNamespaces (empty targetNamespaces
+  # makes OLM try AllNamespaces and the install fails with UnsupportedOperatorGroup).
+  # Cluster-scoped CRs are still fine; watch scope is not the same as CR scope.
+  targetNamespaces:
+    - ${OPERATOR_NS}
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
@@ -102,12 +104,20 @@ EOF
 
   info "waiting for the CSV to reach Succeeded"
   for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
-    PHASE=$(oc get csv -n "$OPERATOR_NS" -o jsonpath='{.items[?(@.spec.displayName!="")].status.phase}' 2>/dev/null | tr ' ' '\n' | sort -u | tr -d '\n')
+    # Match this package only — other CSVs can appear in the namespace and are not success.
+    PHASE=$(oc get csv -n "$OPERATOR_NS" -o json 2>/dev/null \
+      | python3 -c 'import json,sys
+items=json.load(sys.stdin).get("items",[])
+for i in items:
+  if i.get("metadata",{}).get("name","").startswith("bgp-cloud-connector."):
+    print(i.get("status",{}).get("phase",""))
+    break' 2>/dev/null || true)
     [ "$PHASE" = "Succeeded" ] && break
+    info "bgp-cloud-connector CSV phase: ${PHASE:-<none>}"
     sleep "$WAIT_INTERVAL"
   done
   oc get csv -n "$OPERATOR_NS" || true
-  [ "${PHASE:-}" = "Succeeded" ] || warn "CSV is not Succeeded yet — continuing, but expect the CR below to stall"
+  [ "${PHASE:-}" = "Succeeded" ] || fail "bgp-cloud-connector CSV is not Succeeded (phase=${PHASE:-none}) — fix the OperatorGroup/Subscription before applying CRs"
 
   # Cross-check the ServiceAccount against what the trust policy was built with. A mismatch
   # here is the top cause of CloudCredentialsInvalid, and it is invisible until the operator
