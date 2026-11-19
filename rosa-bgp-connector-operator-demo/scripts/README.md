@@ -31,6 +31,7 @@ different credentials.
 | `02-aws-setup.sh` | AWS owner | `aws` (EC2 + IAM write) | Route Server, endpoints, SG rules, IAM role |
 | `03-cluster-deploy.sh` | cluster admin | `oc` | BGP operator, CNV (if needed), BGP config, CUDN, VM |
 | `04-verify.sh` | either | `oc` and/or `aws` | nothing — read-only readiness check |
+| `05-demo-reachability.sh` | either | `aws` (SSM) | nothing — ping/curl VM from test client |
 | `90-cleanup-cluster.sh` | cluster admin | `oc` | — |
 | `91-cleanup-aws.sh` | AWS owner | `aws` | — |
 
@@ -58,6 +59,9 @@ vi config.env            # cluster name, region, CUDN CIDR, ASNs
                                 # OpenShift Virtualization if the demo VM is enabled
 ./03-cluster-deploy.sh --skip-vm   # networking only (no CNV / no VM)
 ./04-verify.sh
+./05-demo-reachability.sh              # ping + curl VM from the VPC test client (SSM)
+./05-demo-reachability.sh --shell      # interactive SSM session (needs session-manager-plugin)
+./05-demo-reachability.sh --ensure-ssm-profile   # if the client has no IAM profile yet
 
 # afterwards
 ./90-cleanup-cluster.sh      # cluster admin, first
