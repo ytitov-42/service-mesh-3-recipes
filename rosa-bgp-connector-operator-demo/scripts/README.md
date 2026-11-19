@@ -239,6 +239,7 @@ Keep these in mind if you fork or debug older copies:
 | VM create timed out on kubemacpool webhook | Wait for kubemacpool endpoints; retry apply on webhook errors |
 | Bastion ≠ test client path | Bastion is often another VPC; use SSM to the VPC test client (`05`) |
 | Session Manager plugin missing | `05` default uses SendCommand; `--shell` needs the plugin |
+| `disassociate-route-server` → IncorrectState / non-deleted propagation | Disable propagation on each route table first (`91` does this now) |
 
 ---
 

@@ -75,7 +75,54 @@ for E in $EPS; do
   info "deleting endpoint $E"
   run aws ec2 delete-route-server-endpoint --region "$REGION" --route-server-endpoint-id "$E" >/dev/null
 done
-[ "$DRY_RUN" = "true" ] || sleep 30
+if [ "$DRY_RUN" != "true" ]; then
+  for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
+    LEFT=$(rs_endpoint_ids "$RS_ID")
+    [ -z "$LEFT" ] && break
+    info "waiting for endpoints to finish deleting"
+    sleep "$WAIT_INTERVAL"
+  done
+  [ -z "$(rs_endpoint_ids "$RS_ID")" ] \
+    || fail "Route Server endpoints still present — wait and re-run, or delete them in the console"
+fi
+
+# Propagation must be cleared before disassociate, or AWS returns IncorrectState:
+# "Route Server has non-deleted propagation to Route Table: rtb-…"
+step "Disable route table propagation"
+PROP_RTBS=$(aws ec2 get-route-server-propagations --region "$REGION" \
+  --route-server-id "$RS_ID" \
+  --query 'RouteServerPropagations[].RouteTableId' --output text 2>/dev/null \
+  | tr '\t' '\n' | sed '/^$/d' | sort -u || true)
+# Fall back to handback if the API returns nothing mid-delete but tables are still listed.
+[ -n "$PROP_RTBS" ] || PROP_RTBS="${ROUTE_TABLES:-}"
+if [ -z "$PROP_RTBS" ]; then
+  ok "no route table propagations to disable"
+else
+  for RTB in $PROP_RTBS; do
+    [ -z "$RTB" ] && continue
+    info "disabling propagation on $RTB"
+    tolerate 'not found|does not exist|InvalidRouteServer|InvalidRouteTable' \
+      aws ec2 disable-route-server-propagation --region "$REGION" \
+        --route-server-id "$RS_ID" --route-table-id "$RTB" >/dev/null
+  done
+  if [ "$DRY_RUN" != "true" ]; then
+    # States are pending|available|deleting — there is no "deleted"; they vanish when gone.
+    for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
+      LEFT=$(aws ec2 get-route-server-propagations --region "$REGION" \
+        --route-server-id "$RS_ID" \
+        --query 'length(RouteServerPropagations)' --output text 2>/dev/null || echo 0)
+      [ "${LEFT:-0}" = "0" ] || [ "$LEFT" = "None" ] && break
+      info "waiting for propagations to clear ($LEFT left)"
+      sleep "$WAIT_INTERVAL"
+    done
+    LEFT=$(aws ec2 get-route-server-propagations --region "$REGION" \
+      --route-server-id "$RS_ID" \
+      --query 'length(RouteServerPropagations)' --output text 2>/dev/null || echo 0)
+    [ "${LEFT:-0}" = "0" ] || [ "$LEFT" = "None" ] \
+      || fail "route table propagations still present after wait — re-run 91 once AWS finishes deleting"
+  fi
+  ok "propagation disabled"
+fi
 
 step "Disassociate and delete the Route Server"
 # A Route Server still attached to a VPC will not delete, so order matters here too.
