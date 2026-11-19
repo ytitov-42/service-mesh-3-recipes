@@ -140,9 +140,8 @@ ok "propagation enabled"
 # ---------------------------------------------------------------------------- endpoints
 step "Route Server endpoints (one per router subnet)"
 
-EXISTING_EP_SUBNETS=$(aws ec2 describe-route-server-endpoints --region "$REGION" \
-  --filters "Name=route-server-id,Values=$RS_ID" \
-  --query 'RouteServerEndpoints[?State!=`deleted`].SubnetId' --output text 2>/dev/null | tr '\t' '\n' | sort -u)
+# Do not use --filters Name=route-server-id: the API rejects it. See rs_* in common.sh.
+EXISTING_EP_SUBNETS=$(rs_endpoint_subnets "$RS_ID")
 
 for SUBNET in $ROUTER_SUBNETS; do
   if printf '%s\n' "$EXISTING_EP_SUBNETS" | grep -qx "$SUBNET"; then
@@ -159,17 +158,13 @@ if [ "$DRY_RUN" != "true" ]; then
   # Count endpoints that ARE available against the number expected. Counting the ones that
   # are *not* available would pass instantly if creation had failed and there were none.
   for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
-    READY=$(aws ec2 describe-route-server-endpoints --region "$REGION" \
-      --filters "Name=route-server-id,Values=$RS_ID" \
-      --query 'length(RouteServerEndpoints[?State==`available`])' --output text)
+    READY=$(rs_available_endpoint_count "$RS_ID")
     [ "$READY" -ge "$EXPECTED" ] && break
     info "waiting for endpoints: $READY/$EXPECTED available"
     sleep "$WAIT_INTERVAL"
   done
   [ "${READY:-0}" -ge "$EXPECTED" ] || warn "only $READY/$EXPECTED endpoints became available — check the table below"
-  aws ec2 describe-route-server-endpoints --region "$REGION" \
-    --filters "Name=route-server-id,Values=$RS_ID" \
-    --query 'RouteServerEndpoints[].[RouteServerEndpointId,SubnetId,EniAddress,State]' --output table
+  rs_endpoint_table "$RS_ID"
 fi
 
 # ---------------------------------------------------------------------------- security groups

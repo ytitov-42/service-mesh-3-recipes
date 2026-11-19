@@ -71,9 +71,7 @@ step "AWS"
 
 if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity --region "$REGION" >/dev/null 2>&1; then
   if [ -n "${RS_ID:-}" ]; then
-    EP_OK=$(aws ec2 describe-route-server-endpoints --region "$REGION" \
-      --filters "Name=route-server-id,Values=$RS_ID" \
-      --query 'length(RouteServerEndpoints[?State==`available`])' --output text 2>/dev/null)
+    EP_OK=$(rs_available_endpoint_count "$RS_ID" 2>/dev/null || echo 0)
     printf '    %s[info]%s Route Server endpoints available: %s\n' "$C_BLU" "$C_RST" "${EP_OK:-0}"
 
     # The money shot of the demo. If this is empty with healthy sessions, propagation is

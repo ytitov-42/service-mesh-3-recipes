@@ -128,6 +128,59 @@ require_aws() {
     || fail "AWS credentials not usable for region $REGION"
 }
 
+# ---- Route Server describes --------------------------------------------------
+# describe-route-server-endpoints / -peers currently reject Name=route-server-id
+# filters (InvalidParameterValue) even though the docs list them. List everything
+# and filter client-side with JMESPath instead. rs-DRYRUN is the dry-run sentinel.
+
+rs_endpoint_subnets() {   # rs_endpoint_subnets <rs-id>  -> subnet ids, one per line
+  local rs="$1"
+  [ "$rs" = "rs-DRYRUN" ] && return 0
+  aws ec2 describe-route-server-endpoints --region "$REGION" \
+    --query "RouteServerEndpoints[?RouteServerId=='${rs}' && State!='deleted'].SubnetId" \
+    --output text | tr '\t' '\n' | sort -u
+}
+
+rs_available_endpoint_count() {   # rs_available_endpoint_count <rs-id>
+  local rs="$1"
+  [ "$rs" = "rs-DRYRUN" ] && { printf '0'; return 0; }
+  aws ec2 describe-route-server-endpoints --region "$REGION" \
+    --query "length(RouteServerEndpoints[?RouteServerId=='${rs}' && State=='available'])" \
+    --output text
+}
+
+rs_endpoint_table() {   # rs_endpoint_table <rs-id>
+  local rs="$1"
+  [ "$rs" = "rs-DRYRUN" ] && return 0
+  aws ec2 describe-route-server-endpoints --region "$REGION" \
+    --query "RouteServerEndpoints[?RouteServerId=='${rs}'].[RouteServerEndpointId,SubnetId,EniAddress,State]" \
+    --output table
+}
+
+rs_endpoint_ids() {   # rs_endpoint_ids <rs-id>  -> endpoint ids, one per line
+  local rs="$1"
+  [ "$rs" = "rs-DRYRUN" ] && return 0
+  aws ec2 describe-route-server-endpoints --region "$REGION" \
+    --query "RouteServerEndpoints[?RouteServerId=='${rs}' && State!='deleted'].RouteServerEndpointId" \
+    --output text | tr '\t' '\n'
+}
+
+rs_peer_ids() {   # rs_peer_ids <rs-id>  -> peer ids, one per line
+  local rs="$1"
+  [ "$rs" = "rs-DRYRUN" ] && return 0
+  aws ec2 describe-route-server-peers --region "$REGION" \
+    --query "RouteServerPeers[?RouteServerId=='${rs}' && State!='deleted'].RouteServerPeerId" \
+    --output text | tr '\t' '\n'
+}
+
+rs_peer_table() {   # rs_peer_table <rs-id>
+  local rs="$1"
+  [ "$rs" = "rs-DRYRUN" ] && return 0
+  aws ec2 describe-route-server-peers --region "$REGION" \
+    --query "RouteServerPeers[?RouteServerId=='${rs}'].[RouteServerPeerId,State]" \
+    --output table
+}
+
 # Tolerate 'already exists / already associated' style errors without masking real ones.
 # usage: tolerate "<regex of acceptable error text>" <command...>
 tolerate() {

@@ -56,9 +56,8 @@ fi
 step "Route Server peers"
 # Normally the operator removed these already; this catches anything stranded by a
 # controller that was killed mid-finalizer. An endpoint with a live peer will not delete.
-PEERS=$(aws ec2 describe-route-server-peers --region "$REGION" \
-  --filters "Name=route-server-id,Values=$RS_ID" \
-  --query 'RouteServerPeers[?State!=`deleted`].RouteServerPeerId' --output text 2>/dev/null | tr '\t' '\n')
+# Do not use --filters Name=route-server-id: the API rejects it. See rs_* in common.sh.
+PEERS=$(rs_peer_ids "$RS_ID")
 if [ -z "$PEERS" ]; then
   ok "no peers left (the operator cleaned up properly)"
 else
@@ -70,9 +69,7 @@ else
 fi
 
 step "Route Server endpoints (this stops the hourly charge)"
-EPS=$(aws ec2 describe-route-server-endpoints --region "$REGION" \
-  --filters "Name=route-server-id,Values=$RS_ID" \
-  --query 'RouteServerEndpoints[?State!=`deleted`].RouteServerEndpointId' --output text 2>/dev/null | tr '\t' '\n')
+EPS=$(rs_endpoint_ids "$RS_ID")
 for E in $EPS; do
   [ -z "$E" ] && continue
   info "deleting endpoint $E"

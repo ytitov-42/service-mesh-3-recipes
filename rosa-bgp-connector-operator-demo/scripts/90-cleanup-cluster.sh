@@ -53,9 +53,7 @@ fi
 if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity --region "$REGION" >/dev/null 2>&1 \
    && [ -n "${RS_ID:-}" ]; then
   step "AWS state after the finalizer"
-  aws ec2 describe-route-server-peers --region "$REGION" \
-    --filters "Name=route-server-id,Values=$RS_ID" \
-    --query 'RouteServerPeers[].[RouteServerPeerId,State]' --output table || true
+  rs_peer_table "$RS_ID" || true
   if [ -n "${INSTANCE_IDS:-}" ]; then
     # Expect True everywhere. False means the operator did not get to re-enable it.
     # shellcheck disable=SC2086
