@@ -163,10 +163,13 @@ if [ "$DRY_RUN" != "true" ]; then
   # Poll rather than sleep: FRR has to roll out before any session can come up, and how long
   # that takes depends on the cluster.
   for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
-    TOTAL=$(oc get bgpsessionstates -A --no-headers 2>/dev/null | wc -l || echo 0)
+    # Prefer counting lines over `wc -l || echo 0`: with pipefail, a failed oc still lets
+    # wc print "0" and then echo adds another "0", which breaks integer tests.
+    TOTAL=$(oc get bgpsessionstates -A --no-headers 2>/dev/null | grep -c . || true)
     UP=$(oc get bgpsessionstates -A --no-headers 2>/dev/null | grep -ci established || true)
-    [ "${TOTAL:-0}" -gt 0 ] && [ "${UP:-0}" -eq "${TOTAL:-0}" ] && break
-    info "sessions established: ${UP:-0}/${TOTAL:-0}"
+    TOTAL=${TOTAL:-0}; UP=${UP:-0}
+    [ "$TOTAL" -gt 0 ] && [ "$UP" -eq "$TOTAL" ] && break
+    info "sessions established: ${UP}/${TOTAL}"
     sleep "$WAIT_INTERVAL"
   done
   oc get bgpsessionstates -A -o wide || true
@@ -202,8 +205,9 @@ spec:
   network:
     # Must equal the cluster-udn label above, or the VM lands on the pod network instead.
     name: ${CUDN_NAME}
-  subnets:
-    - ${CUDN_CIDR}
+    # Nested under network (not spec.subnets) — required by the v1beta1 CRD.
+    subnets:
+      - ${CUDN_CIDR}
 EOF
 
   for _ in $(seq 1 "$WAIT_ATTEMPTS"); do

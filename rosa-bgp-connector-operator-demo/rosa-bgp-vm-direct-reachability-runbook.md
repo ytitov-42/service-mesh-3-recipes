@@ -882,11 +882,12 @@ spec:
   network:
     # Produces a CUDN called cluster-udn-prod selecting namespaces labelled cluster-udn: prod.
     name: prod
-  subnets:
-    # One entry for single-stack. The operator hardcodes Layer2 + Primary + Persistent IPAM
-    # on the generated CUDN, so this prefix is the only addressing decision left to you —
-    # and it is immutable once created.
-    - ${CUDN_CIDR}
+    # Nested under network (not spec.subnets) — required by the v1beta1 CRD.
+    subnets:
+      # One entry for single-stack. The operator hardcodes Layer2 + Primary + Persistent IPAM
+      # on the generated CUDN, so this prefix is the only addressing decision left to you —
+      # and it is immutable once created.
+      - ${CUDN_CIDR}
 EOF
 ```
 
