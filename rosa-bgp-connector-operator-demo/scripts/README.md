@@ -29,7 +29,7 @@ different credentials.
 |---|---|---|---|
 | `01-cluster-prepare.sh` | cluster admin | `oc` | nothing — validates and labels nodes |
 | `02-aws-setup.sh` | AWS owner | `aws` (EC2 + IAM write) | Route Server, endpoints, SG rules, IAM role |
-| `03-cluster-deploy.sh` | cluster admin | `oc` | operator, BGP config, CUDN, VM |
+| `03-cluster-deploy.sh` | cluster admin | `oc` | BGP operator, CNV (if needed), BGP config, CUDN, VM |
 | `04-verify.sh` | either | `oc` and/or `aws` | nothing — read-only readiness check |
 | `90-cleanup-cluster.sh` | cluster admin | `oc` | — |
 | `91-cleanup-aws.sh` | AWS owner | `aws` | — |
@@ -54,7 +54,9 @@ vi config.env            # cluster name, region, CUDN CIDR, ASNs
 #   -> send state/handback.env back
 
 # cluster admin
-./03-cluster-deploy.sh
+./03-cluster-deploy.sh          # installs BGP Cloud Connector; also installs
+                                # OpenShift Virtualization if the demo VM is enabled
+./03-cluster-deploy.sh --skip-vm   # networking only (no CNV / no VM)
 ./04-verify.sh
 
 # afterwards

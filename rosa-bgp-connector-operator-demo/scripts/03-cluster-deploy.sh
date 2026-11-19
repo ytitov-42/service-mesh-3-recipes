@@ -14,10 +14,12 @@ usage() {
   cat <<'USAGE'
 Usage: 03-cluster-deploy.sh [options]
 
-  --skip-vm      Deploy networking only, no VirtualMachine
+  --skip-vm      Deploy networking only (no CNV install, no VirtualMachine)
   --dry-run      Print what would change, change nothing
   --yes          Do not prompt
   -h, --help     This text
+
+  Without --skip-vm, OpenShift Virtualization is installed automatically if missing.
 USAGE
 }
 
@@ -221,10 +223,125 @@ EOF
   oc get clusteruserdefinednetwork,routeadvertisements
 fi
 
+# ---------------------------------------------------------------------------- OpenShift Virtualization (CNV)
+# Only needed for the demo VM. BGP / CUDN work without it (--skip-vm).
+ensure_cnv() {
+  local ns="${CNV_NS:-openshift-cnv}"
+  local pkg="${CNV_PKG:-kubevirt-hyperconverged}"
+  local channel catalog catalog_ns phase hco
+
+  hco=$(oc get hyperconverged kubevirt-hyperconverged -n "$ns" \
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || true)
+  if [ "$hco" = "True" ] && oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1; then
+    ok "OpenShift Virtualization already Available"
+    return 0
+  fi
+
+  step "Installing OpenShift Virtualization"
+  if ! oc get packagemanifest "$pkg" -n openshift-marketplace >/dev/null 2>&1; then
+    fail_ref "package '$pkg' is not in this cluster's catalog" "Section 1"
+  fi
+  channel="${CNV_CHANNEL:-}"
+  if [ -z "$channel" ]; then
+    channel=$(oc get packagemanifest "$pkg" -n openshift-marketplace \
+      -o jsonpath='{.status.defaultChannel}')
+  fi
+  catalog=$(oc get packagemanifest "$pkg" -n openshift-marketplace \
+    -o jsonpath='{.status.catalogSource}')
+  catalog_ns=$(oc get packagemanifest "$pkg" -n openshift-marketplace \
+    -o jsonpath='{.status.catalogSourceNamespace}')
+  info "channel=$channel catalog=$catalog/$catalog_ns"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    info "[dry] would install OpenShift Virtualization in $ns"
+    return 0
+  fi
+
+  cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${ns}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kubevirt-hyperconverged-group
+  namespace: ${ns}
+spec:
+  targetNamespaces:
+    - ${ns}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: hco-operatorhub
+  namespace: ${ns}
+spec:
+  channel: ${channel}
+  name: ${pkg}
+  source: ${catalog}
+  sourceNamespace: ${catalog_ns}
+  installPlanApproval: Automatic
+EOF
+
+  info "waiting for a CNV-related CSV to reach Succeeded (and VirtualMachine CRD)"
+  for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
+    phase=$(oc get csv -n "$ns" -o json 2>/dev/null \
+      | python3 -c 'import json,sys
+items=json.load(sys.stdin).get("items",[])
+for i in items:
+  name=i.get("metadata",{}).get("name","").lower()
+  if "kubevirt-hyperconverged" in name or "hco-operator" in name:
+    print(i.get("status",{}).get("phase",""))
+    break' 2>/dev/null || true)
+    if [ "$phase" = "Succeeded" ] && oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1; then
+      break
+    fi
+    # Some builds expose the CRD before the HCO CSV name matches; accept that too.
+    if oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1 \
+       && oc get csv -n "$ns" -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' 2>/dev/null \
+            | grep -qx Succeeded; then
+      break
+    fi
+    info "CNV CSV phase: ${phase:-<none>}"
+    sleep "$WAIT_INTERVAL"
+  done
+  oc get csv -n "$ns" || true
+  oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1 \
+    || fail "OpenShift Virtualization did not install VirtualMachine CRDs"
+
+  cat <<EOF | oc apply -f -
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: ${ns}
+spec: {}
+EOF
+
+  info "waiting for HyperConverged to become Available"
+  for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
+    hco=$(oc get hyperconverged kubevirt-hyperconverged -n "$ns" \
+      -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || true)
+    [ "$hco" = "True" ] && break
+    info "HyperConverged Available: ${hco:-<none>}"
+    sleep "$WAIT_INTERVAL"
+  done
+  [ "${hco:-}" = "True" ] || fail "HyperConverged is not Available — check 'oc get hyperconverged -n $ns -o yaml'"
+  ok "OpenShift Virtualization Available"
+
+  if ! oc get nodes -l kubevirt.io/schedulable=true --no-headers 2>/dev/null | grep -q .; then
+    warn "no node is kubevirt.io/schedulable=true yet — metal nodes must finish becoming schedulable"
+    warn "the VM may stay Pending until that label appears (CNV on ROSA needs *.metal)"
+  fi
+}
+
 # ---------------------------------------------------------------------------- VM
 if [ "$SKIP_VM" = "true" ]; then
   step "Skipping VM (--skip-vm)"
 else
+  ensure_cnv
   step "Demo VM"
   if [ "$DRY_RUN" = "true" ]; then
     info "[dry] would create VirtualMachine $VM_NAME"
