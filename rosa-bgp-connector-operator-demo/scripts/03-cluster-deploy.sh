@@ -285,7 +285,9 @@ spec:
   installPlanApproval: Automatic
 EOF
 
-  info "waiting for a CNV-related CSV to reach Succeeded (and VirtualMachine CRD)"
+  # VirtualMachine CRDs appear only AFTER HyperConverged is created. Wait for the
+  # operator CSV + HyperConverged CRD first, then apply HCO, then wait for VMs.
+  info "waiting for kubevirt-hyperconverged CSV Succeeded (and HyperConverged CRD)"
   for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
     phase=$(oc get csv -n "$ns" -o json 2>/dev/null \
       | python3 -c 'import json,sys
@@ -295,21 +297,16 @@ for i in items:
   if "kubevirt-hyperconverged" in name or "hco-operator" in name:
     print(i.get("status",{}).get("phase",""))
     break' 2>/dev/null || true)
-    if [ "$phase" = "Succeeded" ] && oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1; then
-      break
-    fi
-    # Some builds expose the CRD before the HCO CSV name matches; accept that too.
-    if oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1 \
-       && oc get csv -n "$ns" -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' 2>/dev/null \
-            | grep -qx Succeeded; then
+    if [ "$phase" = "Succeeded" ] && oc get crd hyperconvergeds.hco.kubevirt.io >/dev/null 2>&1; then
       break
     fi
     info "CNV CSV phase: ${phase:-<none>}"
     sleep "$WAIT_INTERVAL"
   done
   oc get csv -n "$ns" || true
-  oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1 \
-    || fail "OpenShift Virtualization did not install VirtualMachine CRDs"
+  [ "${phase:-}" = "Succeeded" ] || fail "kubevirt-hyperconverged CSV is not Succeeded (phase=${phase:-none})"
+  oc get crd hyperconvergeds.hco.kubevirt.io >/dev/null 2>&1 \
+    || fail "HyperConverged CRD missing after CSV Succeeded"
 
   cat <<EOF | oc apply -f -
 apiVersion: hco.kubevirt.io/v1beta1
@@ -320,15 +317,19 @@ metadata:
 spec: {}
 EOF
 
-  info "waiting for HyperConverged to become Available"
+  info "waiting for HyperConverged Available (deploys KubeVirt / VirtualMachine CRDs)"
   for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
     hco=$(oc get hyperconverged kubevirt-hyperconverged -n "$ns" \
       -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || true)
-    [ "$hco" = "True" ] && break
-    info "HyperConverged Available: ${hco:-<none>}"
+    if [ "$hco" = "True" ] && oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1; then
+      break
+    fi
+    info "HyperConverged Available: ${hco:-<none>}  VirtualMachine CRD: $(oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1 && echo yes || echo no)"
     sleep "$WAIT_INTERVAL"
   done
   [ "${hco:-}" = "True" ] || fail "HyperConverged is not Available — check 'oc get hyperconverged -n $ns -o yaml'"
+  oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1 \
+    || fail "VirtualMachine CRD still missing after HyperConverged Available"
   ok "OpenShift Virtualization Available"
 
   if ! oc get nodes -l kubevirt.io/schedulable=true --no-headers 2>/dev/null | grep -q .; then
