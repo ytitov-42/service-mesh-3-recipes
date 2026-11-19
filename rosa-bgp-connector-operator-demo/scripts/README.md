@@ -240,6 +240,7 @@ Keep these in mind if you fork or debug older copies:
 | Bastion ≠ test client path | Bastion is often another VPC; use SSM to the VPC test client (`05`) |
 | Session Manager plugin missing | `05` default uses SendCommand; `--shell` needs the plugin |
 | `disassociate-route-server` → IncorrectState / non-deleted propagation | Disable propagation on each route table first (`91` does this now) |
+| Re-running `91` while RS is `deleting`/`deleted` | Treat those states as success; delete only when still live |
 
 ---
 

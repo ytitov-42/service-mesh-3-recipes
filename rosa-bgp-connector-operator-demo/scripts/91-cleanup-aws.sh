@@ -125,13 +125,35 @@ else
 fi
 
 step "Disassociate and delete the Route Server"
-# A Route Server still attached to a VPC will not delete, so order matters here too.
-tolerate 'not associated|InvalidRouteServer|does not exist' \
-  aws ec2 disassociate-route-server --region "$REGION" --route-server-id "$RS_ID" --vpc-id "$VPC_ID" >/dev/null
-[ "$DRY_RUN" = "true" ] || sleep 15
-tolerate 'InvalidRouteServer|does not exist|has dependencies' \
-  aws ec2 delete-route-server --region "$REGION" --route-server-id "$RS_ID" >/dev/null
-ok "Route Server removed (verify below)"
+RS_STATE=$(aws ec2 describe-route-servers --region "$REGION" --route-server-ids "$RS_ID" \
+  --query 'RouteServers[0].State' --output text 2>/dev/null || echo missing)
+case "$RS_STATE" in
+  deleted|missing|None)
+    ok "Route Server already gone (state=$RS_STATE)"
+    ;;
+  deleting)
+    ok "Route Server already deleting — nothing to do"
+    ;;
+  *)
+    # Still associated with a VPC will not delete; order matters here too.
+    tolerate 'not associated|InvalidRouteServer|does not exist|IncorrectState' \
+      aws ec2 disassociate-route-server --region "$REGION" --route-server-id "$RS_ID" --vpc-id "$VPC_ID" >/dev/null
+    [ "$DRY_RUN" = "true" ] || sleep 15
+    # Re-runs often hit IncorrectState while AWS is still finishing disassociate/delete.
+    tolerate 'InvalidRouteServer|does not exist|has dependencies|IncorrectState|invalid state' \
+      aws ec2 delete-route-server --region "$REGION" --route-server-id "$RS_ID" >/dev/null
+    if [ "$DRY_RUN" != "true" ]; then
+      for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
+        RS_STATE=$(aws ec2 describe-route-servers --region "$REGION" --route-server-ids "$RS_ID" \
+          --query 'RouteServers[0].State' --output text 2>/dev/null || echo missing)
+        case "$RS_STATE" in deleted|missing|None|deleting) break ;; esac
+        info "waiting for Route Server delete (state=$RS_STATE)"
+        sleep "$WAIT_INTERVAL"
+      done
+    fi
+    ok "Route Server removed (verify below)"
+    ;;
+esac
 
 # ---- IAM -------------------------------------------------------------------------------
 if [ "$KEEP_ROLE" = "true" ]; then
@@ -156,9 +178,10 @@ if [ -n "${TEST_CLIENT_ID:-}" ]; then
 fi
 
 step "Verify nothing is left billing"
+# describe can still return recently deleted servers; ignore those.
 aws ec2 describe-route-servers --region "$REGION" \
   --filters "Name=tag:Name,Values=$RS_NAME_TAG" \
-  --query 'RouteServers[].[RouteServerId,State]' --output table || true
+  --query 'RouteServers[?State!=`deleted`].[RouteServerId,State]' --output table || true
 
 cat <<EOF
 
