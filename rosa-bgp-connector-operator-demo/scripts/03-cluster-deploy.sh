@@ -330,6 +330,22 @@ EOF
   [ "${hco:-}" = "True" ] || fail "HyperConverged is not Available — check 'oc get hyperconverged -n $ns -o yaml'"
   oc get crd virtualmachines.kubevirt.io >/dev/null 2>&1 \
     || fail "VirtualMachine CRD still missing after HyperConverged Available"
+
+  # HCO Available can race ahead of the kubemacpool mutating webhook; creating a VM
+  # then fails with context deadline exceeded talking to kubemacpool-service.
+  info "waiting for kubemacpool webhook endpoints"
+  for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
+    if oc get deploy kubemacpool-mac-controller-manager -n "$ns" >/dev/null 2>&1 \
+       && [ "$(oc get deploy kubemacpool-mac-controller-manager -n "$ns" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)" -ge 1 ] \
+       && [ -n "$(oc get endpoints kubemacpool-service -n "$ns" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)" ]; then
+      break
+    fi
+    info "kubemacpool not ready yet"
+    sleep "$WAIT_INTERVAL"
+  done
+  [ -n "$(oc get endpoints kubemacpool-service -n "$ns" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)" ] \
+    || fail "kubemacpool-service has no endpoints — VM create will fail on the mutating webhook"
+
   ok "OpenShift Virtualization Available"
 
   if ! oc get nodes -l kubevirt.io/schedulable=true --no-headers 2>/dev/null | grep -q .; then
@@ -347,7 +363,9 @@ else
   if [ "$DRY_RUN" = "true" ]; then
     info "[dry] would create VirtualMachine $VM_NAME"
   else
-    cat <<EOF | oc apply -f -
+    VM_MANIFEST=$(mktemp)
+    trap 'rm -f "$VM_MANIFEST"' RETURN
+    cat > "$VM_MANIFEST" <<EOF
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
@@ -412,6 +430,24 @@ spec:
                 - [ systemctl, daemon-reload ]
                 - [ systemctl, enable, --now, demo-web.service ]
 EOF
+    # Retry: kubemacpool / virt webhooks can still be warming up right after HCO Available.
+    apply_out=""
+    for _ in $(seq 1 12); do
+      if apply_out=$(oc apply -f "$VM_MANIFEST" 2>&1); then
+        printf '%s\n' "$apply_out"
+        break
+      fi
+      if printf '%s' "$apply_out" | grep -qiE 'webhook|timeout|connection refused|no endpoints'; then
+        warn "VM apply hit a webhook/API race; retrying..."
+        info "$apply_out"
+        sleep "$WAIT_INTERVAL"
+        continue
+      fi
+      printf '%s\n' "$apply_out" >&2
+      fail "failed to create VirtualMachine $VM_NAME"
+    done
+    printf '%s' "$apply_out" | grep -qE 'created|configured|unchanged' \
+      || fail "failed to create VirtualMachine $VM_NAME after retries: $apply_out"
 
     step "Checkpoint 2 — the VM's address"
     for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
