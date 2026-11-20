@@ -75,27 +75,65 @@ cd rosa-bgp-connector-operator-demo/scripts
 
 ### Prerequisite: metal workers (if you need the VM)
 
-CNV on ROSA needs `*.metal`. From a host where `rosa list clusters` shows your cluster
-(often the **bastion**):
+**Goal:** bare-metal workers so CNV can run the demo VM. **Done when:** `virt-mp` is `2/2` and metal nodes are Ready with `bgp_router=true`.
+
+CNV on ROSA needs `*.metal`. From a host where `rosa` sees your cluster (often the **bastion**).
+
+**Inspect** (optional — see what you will pick):
 
 ```bash
 rosa list clusters
-rosa list instance-types --hosted-cp --region us-east-2 | grep -i metal
+# private worker subnets only (do not use .aws.subnet_ids[0] — that is often public)
+rosa list machinepools -c <name>
+rosa list machinepools -c <name> -o json | jq -r '.[] | "\(.id) \(.subnet // .subnets[0])"'
+```
 
-rosa create machinepool --cluster <rosa-cluster-name> --name virt-mp \
+**Set variables** (from `rosa` / `jq`; HCP machine pools must use a **private** subnet):
+
+```bash
+export REGION="us-east-2"
+export CLUSTER_NAME=$(rosa list clusters -o json \
+  | jq -r '[.[] | select(.state=="ready")][0].name')
+# reuse subnet from workers* pool (HCP field is .subnet; some builds use .subnets[])
+export WORKER_SUBNET=$(rosa list machinepools -c "$CLUSTER_NAME" -o json \
+  | jq -r '
+      ([.[] | select(.id | startswith("workers"))][0] // .[0])
+      | .subnet // .subnets[0] // empty
+    ')
+
+echo "CLUSTER_NAME=$CLUSTER_NAME  WORKER_SUBNET=$WORKER_SUBNET"
+```
+
+**Create the metal pool:**
+
+```bash
+rosa list instance-types --hosted-cp --region "$REGION" | grep -i metal
+
+rosa create machinepool --cluster "$CLUSTER_NAME" --name virt-mp \
   --replicas 2 \
   --instance-type m5zn.metal \
-  --subnet <worker-subnet-id> \
+  --subnet "$WORKER_SUBNET" \
   --ec2-metadata-http-tokens required \
   --labels bgp_router=true
 ```
 
-Wait until the pool shows `2/2` and nodes are Ready (`oc get nodes -L node.kubernetes.io/instance-type,bgp_router`).
-Metal often takes **15–45 minutes** after EC2 is `running`.
+Wait until the pool shows `2/2` (metal often takes **15–45 minutes** after EC2 is `running`):
+
+```bash
+# works on bastion without kubeconfig
+rosa describe machinepool --cluster "$CLUSTER_NAME" --machinepool virt-mp \
+  | egrep 'Current replicas|Desired replicas|Message'
+# or: watch -n 30 'rosa describe machinepool -c "$CLUSTER_NAME" --machinepool virt-mp | egrep "Current replicas|Message"'
+
+# once kubeconfig / oc login is set:
+oc get nodes -L node.kubernetes.io/instance-type,bgp_router
+```
 
 > Note: `rosa list instance-types` on some CLI builds has **no** `-c` flag; use `--hosted-cp --region`.
 
 ### 0. Edit `config.env`
+
+**Goal:** lock demo choices (name, region, CUDN, ASNs). **Done when:** values match the cluster and CUDN does not overlap pod/service/VPC CIDRs.
 
 Set at least:
 
@@ -118,17 +156,20 @@ oc get network.config/cluster -o jsonpath='Pod: {.spec.clusterNetwork[*].cidr}{"
 
 ### 1. Cluster prepare (`01`)
 
+**Goal:** discover router nodes / OIDC and write the AWS handoff. **Done when:** `state/handoff.env` exists (instance IDs, OIDC, ASNs, …).
+
 ```bash
 ./01-cluster-prepare.sh --dry-run
 ./01-cluster-prepare.sh --yes
 ```
 
-Produces `state/handoff.env` (instance IDs, OIDC, ASNs, …). Share `config.env` + `handoff.env`
-with the AWS owner if roles are split.
+Share `config.env` + `handoff.env` with the AWS owner if roles are split.
 
 If you added metal **after** a previous `01` run, re-run `01` so handoff picks up new instance IDs.
 
 ### 2. AWS setup (`02`)
+
+**Goal:** Route Server, endpoints, SG, IAM role (+ optional test client). **Done when:** `state/handback.env` has `RS_ID`, `ROLE_ARN`, route tables.
 
 ```bash
 aws sts get-caller-identity --region "$REGION"   # must work
@@ -137,12 +178,12 @@ aws sts get-caller-identity --region "$REGION"   # must work
 ./02-aws-setup.sh --yes --with-test-client       # recommended for the demo
 ```
 
-Produces `state/handback.env` (`RS_ID`, `ROLE_ARN`, route tables, optional test client).
-
 `--with-test-client` launches a small EC2 in a router subnet. It does **not** attach an
 IAM instance profile (privilege decision). Use script 05 with `--ensure-ssm-profile` later.
 
 ### 3. Cluster deploy (`03`)
+
+**Goal:** BGP operator + sessions + CUDN (+ CNV/VM unless skipped). **Done when:** BGP Established and (unless `--skip-vm`) demo VM has a CUDN IP.
 
 ```bash
 ./03-cluster-deploy.sh --dry-run --yes
@@ -162,14 +203,15 @@ This will:
 
 ### 4. Verify (`04`)
 
+**Goal:** read-only readiness check of cluster + AWS advertisement. **Done when:** operator, BGP, BGPRouting, CUDN, VM IP, IPAMClaim (and VPC route) all pass.
+
 ```bash
 ./04-verify.sh
 ```
 
-Expect passes for operator, BGP sessions, BGPRouting, CUDN, VM IP in CUDN, IPAMClaim,
-and (with AWS creds) the CUDN prefix in VPC route tables.
-
 ### 5. Demo reachability (`05`)
+
+**Goal:** prove VPC → VM L3 reachability (no Service/NAT). **Done when:** ping/curl from the VPC test client to the VM IP succeed.
 
 From a VPC test client (not the lab bastion — it is usually in another VPC):
 
@@ -202,6 +244,8 @@ oc get vmi demo-vm -n bgp-demo -o wide
 ```
 
 ### 6. Cleanup (order matters)
+
+**Goal:** remove cluster objects first, then AWS (stops Route Server $/hr). **Done when:** CRs gone and Route Server / IAM deleted; optional: metal pool deleted.
 
 ```bash
 ./90-cleanup-cluster.sh --yes     # wait for BGPCloudConfiguration finalizer
