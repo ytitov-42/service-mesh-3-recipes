@@ -36,12 +36,14 @@ When you finish:
                                               05-demo-reachability.sh
 ```
 
+**Main demo path:** **01 → 02 → 03 → 04**. Then **05** for the live ping/curl; **90 → 91** to tear down.
+
 | Script | Who | Needs | Does |
 |---|---|---|---|
-| `01-cluster-prepare.sh` | cluster admin | `oc` | Preflight, label routers, write `state/handoff.env` |
-| `02-aws-setup.sh` | AWS owner | `aws` (EC2 + IAM) | Route Server, endpoints, SG, IAM role → `state/handback.env` |
-| `03-cluster-deploy.sh` | cluster admin | `oc` | BGP operator, CNV (if VM), BGP CRs, demo VM |
-| `04-verify.sh` | either | `oc` and/or `aws` | Read-only readiness check |
+| **`01-cluster-prepare.sh`** | cluster admin | `oc` | Preflight, label routers, write `state/handoff.env` |
+| **`02-aws-setup.sh`** | AWS owner | `aws` (EC2 + IAM) | Route Server, endpoints, SG, IAM role → `state/handback.env` |
+| **`03-cluster-deploy.sh`** | cluster admin | `oc` | BGP operator, CNV (if VM), BGP CRs, demo VM |
+| **`04-verify.sh`** | either | `oc` and/or `aws` | Read-only readiness check |
 | `05-demo-reachability.sh` | either | `aws` (SSM) | Ping/curl VM from the VPC test client |
 | `90-cleanup-cluster.sh` | cluster admin | `oc` | Tear down cluster objects (**first**) |
 | `91-cleanup-aws.sh` | AWS owner | `aws` | Tear down Route Server / IAM (**second**, stops hourly charge) |
