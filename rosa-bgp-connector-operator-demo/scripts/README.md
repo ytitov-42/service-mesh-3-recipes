@@ -9,6 +9,20 @@ The runbook explains *why*; these scripts are the *how*.
 
 ---
 
+## Acronyms
+
+| Term | Meaning |
+|---|---|
+| **FRR** | [Free Range Routing](https://frrouting.org/) — routing stack (BGP/BFD) that OVN-Kubernetes enables on router nodes when `BGPCloudConfiguration` is applied; causes a short network blip |
+| **CUDN** | Cluster User Defined Network — L2/L3 overlay whose prefix is advertised into the VPC |
+| **CNV** | OpenShift Virtualization (KubeVirt) — runs the demo VM on metal workers |
+| **HCP** | ROSA Hosted Control Plane |
+| **ASN** | Autonomous System Number (BGP). Cluster and Amazon ASNs must differ |
+| **BFD** | Bidirectional Forwarding Detection — fast session liveness (vs BGP keepalives) |
+| **SSM** | AWS Systems Manager — used by script `05` to reach the VPC test client |
+
+---
+
 ## What you get
 
 When you finish:
