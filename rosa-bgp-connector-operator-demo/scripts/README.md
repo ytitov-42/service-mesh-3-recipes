@@ -172,10 +172,12 @@ If you added metal **after** a previous `01` run, re-run `01` so handoff picks u
 **Goal:** Route Server, endpoints, SG, IAM role (+ optional test client). **Done when:** `state/handback.env` has `RS_ID`, `ROLE_ARN`, route tables.
 
 ```bash
-aws sts get-caller-identity --region "$REGION"   # must work
+# must succeed (source config.env first, or export REGION)
+aws sts get-caller-identity --region "$REGION"
 
 ./02-aws-setup.sh --dry-run --yes
-./02-aws-setup.sh --yes --with-test-client       # recommended for the demo
+# recommended for the demo:
+./02-aws-setup.sh --yes --with-test-client
 ```
 
 `--with-test-client` launches a small EC2 in a router subnet. It does **not** attach an
@@ -229,7 +231,8 @@ From a VPC test client (not the lab bastion — it is usually in another VPC):
 On the client (or via SendCommand output):
 
 ```bash
-ping -c4 <VM_IP>          # e.g. 192.168.100.3
+# e.g. 192.168.100.3
+ping -c4 <VM_IP>
 curl http://<VM_IP>/
 ```
 
@@ -239,7 +242,8 @@ Also show in the AWS console: **VPC → Route tables → Routes** → destinatio
 Cluster side:
 
 ```bash
-oc get svc -n bgp-demo                    # should be empty
+# should be empty (no Service / NAT)
+oc get svc -n bgp-demo
 oc get vmi demo-vm -n bgp-demo -o wide
 ```
 
@@ -248,8 +252,10 @@ oc get vmi demo-vm -n bgp-demo -o wide
 **Goal:** remove cluster objects first, then AWS (stops Route Server $/hr). **Done when:** CRs gone and Route Server / IAM deleted; optional: metal pool deleted.
 
 ```bash
-./90-cleanup-cluster.sh --yes     # wait for BGPCloudConfiguration finalizer
-./91-cleanup-aws.sh --yes         # deletes Route Server endpoints (stops hourly $)
+# wait for BGPCloudConfiguration finalizer
+./90-cleanup-cluster.sh --yes
+# deletes Route Server endpoints (stops hourly $)
+./91-cleanup-aws.sh --yes
 
 # metal pool (from bastion / rosa):
 rosa delete machinepool --cluster "$CLUSTER_NAME" --machinepool virt-mp --yes
